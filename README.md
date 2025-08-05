@@ -102,7 +102,6 @@ This project demonstrates:
 - **Full-Stack Development** (Flask backend, Chart.js frontend).
 - **Software Engineering Practices** (modular code, type hints, logging, clean architecture).
 
-Perfect for showcasing **DSA + full-stack skills** in a real-world context.
 
 ---
 
