@@ -3,7 +3,20 @@ import sqlite3
 import os
 import random
 import numpy as np
+import logging
+from typing import List, Dict, Optional, Tuple, Union
 
+# ------------------------------------------------------------
+# Logging Configuration
+# ------------------------------------------------------------
+# Set default logging level to INFO for production.
+# Change to DEBUG when detailed output is needed for debugging.
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+# ------------------------------------------------------------
+# Database Path Resolution
+# ------------------------------------------------------------
+# Try multiple paths to locate the database file to handle various run contexts.
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 POSSIBLE_PATHS = [
     os.path.join(BASE_DIR, "sales_data.db"),
@@ -17,45 +30,121 @@ for path in POSSIBLE_PATHS:
         DB_FILE = os.path.abspath(path)
         break
 
+# Default to base directory if nothing found
 if DB_FILE is None:
     DB_FILE = os.path.join(BASE_DIR, "sales_data.db")
 
-print(f"[DEBUG] Using database file: {DB_FILE}")
+logging.info(f"Using database file: {DB_FILE}")
 
-def weighted_moving_average(values, window=7):
+
+# ------------------------------------------------------------
+# Weighted Moving Average (Sliding Window Algorithm)
+# ------------------------------------------------------------
+def weighted_moving_average(values: List[float], window: int = 7) -> List[Optional[float]]:
+    """
+    Compute weighted moving average using a sliding window.
+
+    Each element in the window is weighted incrementally (1 to window size),
+    providing more weight to recent observations.
+
+    Args:
+        values: List of numerical sales values.
+        window: Number of periods to include in the moving average.
+
+    Returns:
+        List of weighted averages (None for initial positions without enough data).
+    """
     weights = list(range(1, window + 1))
-    wma = []
+    wma: List[Optional[float]] = []
+
     for i in range(len(values)):
         if i < window - 1:
+            # Not enough data points to compute WMA
             wma.append(None)
         else:
+            # Compute weighted sum for the last 'window' points
             window_vals = values[i - window + 1: i + 1]
             weighted_sum = sum(w * v for w, v in zip(weights, window_vals))
             wma.append(weighted_sum / sum(weights))
     return wma
 
-def build_seasonality_map(daily_sales):
+
+# ------------------------------------------------------------
+# Seasonality Factor Mapping (Hash Map Implementation)
+# ------------------------------------------------------------
+def build_seasonality_map(daily_sales: pd.DataFrame) -> Dict[int, float]:
+    """
+    Create a hash map of seasonal adjustment factors by ISO week number.
+
+    Each week's average sales is compared to the overall mean to capture
+    recurring seasonal effects.
+
+    Args:
+        daily_sales: DataFrame containing 'date' and 'sales' columns.
+
+    Returns:
+        Dictionary mapping week number to seasonal adjustment factor.
+    """
     daily_sales['week_num'] = daily_sales['date'].dt.isocalendar().week
     weekly_avg = daily_sales.groupby('week_num')['sales'].mean()
     overall_avg = daily_sales['sales'].mean()
     return (weekly_avg / overall_avg).to_dict()
 
-def monte_carlo_forecast(base_forecast, num_simulations=1000, volatility=0.1):
-    sims = [base_forecast + random.gauss(0, volatility * base_forecast)
-            for _ in range(num_simulations)]
+
+# ------------------------------------------------------------
+# Monte Carlo Simulation for Forecast Uncertainty
+# ------------------------------------------------------------
+def monte_carlo_forecast(base_forecast: float,
+                         num_simulations: int = 1000,
+                         volatility: float = 0.1) -> Tuple[float, float, float]:
+    """
+    Perform Monte Carlo simulation to estimate uncertainty around a forecast.
+
+    Adds normally-distributed noise to the base forecast across multiple
+    simulations, returning mean and confidence interval percentiles.
+
+    Args:
+        base_forecast: Baseline forecast value.
+        num_simulations: Number of simulation iterations.
+        volatility: Percent variation (std dev as fraction of base_forecast).
+
+    Returns:
+        Tuple of (mean, 5th percentile, 95th percentile) forecast values.
+    """
+    sims = [
+        base_forecast + random.gauss(0, volatility * base_forecast)
+        for _ in range(num_simulations)
+    ]
     return np.mean(sims), np.percentile(sims, 5), np.percentile(sims, 95)
 
-def load_daily_sales(product_id):
+
+# ------------------------------------------------------------
+# Load Sales Data for Specific Product
+# ------------------------------------------------------------
+def load_daily_sales(product_id: str) -> Union[Optional[pd.DataFrame], Dict[str, str]]:
+    """
+    Retrieve daily sales data for a specific product from SQLite database.
+
+    Validates table existence and returns None if no data is found.
+
+    Args:
+        product_id: Identifier of the product to query.
+
+    Returns:
+        - DataFrame of daily sales (date, sales)
+        - None if no data
+        - Dict with error message if 'sales' table is missing
+    """
     conn = sqlite3.connect(DB_FILE)
 
+    # Confirm 'sales' table exists
     tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()
-    print(f"[DEBUG] Tables in {DB_FILE}:", tables)
-
     table_names = [t[0].lower() for t in tables]
     if "sales" not in table_names:
         conn.close()
         return {"error": f"No 'sales' table found in database {DB_FILE}"}
 
+    # Query sales data for product
     query = """
     SELECT date, sales FROM sales WHERE product_id = ?
     ORDER BY date ASC
@@ -66,35 +155,64 @@ def load_daily_sales(product_id):
     if sales.empty:
         return None
 
+    # Convert dates and combine duplicate dates if necessary
     sales["date"] = pd.to_datetime(sales["date"])
     return sales.groupby("date")["sales"].sum().reset_index()
 
-def aggregate_data(df, mode):
+
+# ------------------------------------------------------------
+# Aggregate Data by Granularity
+# ------------------------------------------------------------
+def aggregate_data(df: pd.DataFrame, mode: str) -> pd.DataFrame:
+    """
+    Resample sales data to daily, monthly, or yearly frequency.
+
+    Args:
+        df: DataFrame with daily sales data.
+        mode: 'daily', 'monthly', or 'yearly'.
+
+    Returns:
+        Resampled DataFrame with aggregated sales.
+    """
     if mode == "monthly":
         return df.resample("M", on="date").sum().reset_index()
     elif mode == "yearly":
         return df.resample("Y", on="date").sum().reset_index()
-    return df  # daily
+    return df  # Default is daily
 
+
+# ------------------------------------------------------------
+# Forecasting Class
+# ------------------------------------------------------------
 class AdvancedPredictor:
-    def __init__(self, sales_df, window=7):
+    """
+    Forecast future sales using weighted moving averages,
+    seasonal adjustment, and Monte Carlo simulations.
+    """
+
+    def __init__(self, sales_df: pd.DataFrame, window: int = 7):
         self.sales_df = sales_df
         self.window = window
         self.sales_values = sales_df["sales"].tolist()
+
+        # Precompute WMA and seasonality map for efficiency
         self.wma = weighted_moving_average(self.sales_values, window=self.window)
         self.seasonality = build_seasonality_map(sales_df)
 
-    def _predict_one_step(self, last_date, last_value):
-        base = last_value
-        next_date = last_date + pd.Timedelta(days=1)
-        week_num = next_date.isocalendar().week
-        season_factor = self.seasonality.get(week_num, 1.0)
-        adjusted_forecast = base * season_factor
-        mc_mean, _, _ = monte_carlo_forecast(adjusted_forecast)
-        return next_date, round(mc_mean, 2)
+    def predict_multi(self, steps: int = 1) -> List[Dict[str, str | float]]:
+        """
+        Generate multi-step forecasts sequentially.
 
-    def predict_multi(self, steps=1):
-        last_date = self.sales_df["date"].max()  # last recorded date
+        Starts from last recorded date and iteratively applies seasonal
+        adjustments and Monte Carlo noise for each predicted step.
+
+        Args:
+            steps: Number of periods to forecast.
+
+        Returns:
+            List of forecast dicts: [{'date': str, 'forecast': float}, ...]
+        """
+        last_date = self.sales_df["date"].max()
         last_value = self.wma[-1] or self.sales_values[-1]
 
         forecasts = []
@@ -109,23 +227,33 @@ class AdvancedPredictor:
             forecast_value = round(mc_mean, 2)
             forecasts.append({"date": str(next_date.date()), "forecast": forecast_value})
 
+            # Update for next iteration
             last_date = next_date
             last_value = forecast_value
 
         return forecasts
 
 
-def predict_for_product(product_id, mode="daily", steps=1):
+# ------------------------------------------------------------
+# Main Prediction Functions
+# ------------------------------------------------------------
+def predict_for_product(product_id: str,
+                        mode: str = "daily",
+                        steps: int = 1) -> Dict[str, Union[str, float, List[Dict]]]:
+    """
+    Predict sales for a product using historical database data.
+    """
     daily_sales = load_daily_sales(product_id)
     if isinstance(daily_sales, dict) and "error" in daily_sales:
         return daily_sales
 
     if daily_sales is None or len(daily_sales) < 7:
         return {"error": f"Not enough data for {product_id} (need at least 7 days)"}
-    
+
     data = aggregate_data(daily_sales, mode)
     predictor = AdvancedPredictor(data)
     forecasts = predictor.predict_multi(steps)
+
     return {
         "product_id": product_id,
         "mode": mode,
@@ -137,17 +265,26 @@ def predict_for_product(product_id, mode="daily", steps=1):
         "high_conf": None
     }
 
-def predict_from_csv(filepath, mode="daily", steps=1):
+
+def predict_from_csv(filepath: str,
+                     mode: str = "daily",
+                     steps: int = 1) -> Dict[str, Union[str, float, List[Dict]]]:
+    """
+    Predict sales from an uploaded CSV file.
+    """
     df = pd.read_csv(filepath)
     if "date" not in df or "sales" not in df:
         return {"error": "CSV must contain 'date' and 'sales' columns"}
+
     df["date"] = pd.to_datetime(df["date"])
     df = aggregate_data(df, mode)
+
     if len(df) < 7:
         return {"error": "Not enough data in uploaded file (need at least 7 entries)"}
-    
+
     predictor = AdvancedPredictor(df)
     forecasts = predictor.predict_multi(steps)
+
     return {
         "product_id": "Uploaded CSV",
         "mode": mode,
