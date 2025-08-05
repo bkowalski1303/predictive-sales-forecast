@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Upload Dataset</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="container mt-5">
+    <h1 class="mb-4">Upload Dataset</h1>
+
+    <!-- Upload Form -->
+    <form method="POST" enctype="multipart/form-data">
+        <div class="mb-2">
+            <input type="file" name="file" class="form-control">
+        </div>
+
+        <div class="mb-2">
+            <select name="mode" class="form-select">
+                <option value="daily">Daily</option>
+                <option value="monthly">Monthly</option>
+                <option value="yearly">Yearly</option>
+            </select>
+        </div>
+
+        <div class="mb-2">
+            <input 
+                type="number" 
+                name="steps" 
+                class="form-control" 
+                placeholder="Number of future steps (e.g., 7)" 
+                min="1" value="1">
+        </div>
+
+        <button class="btn btn-primary">Predict</button>
+    </form>
+
+    <a href="{{ url_for('index') }}" class="btn btn-secondary mt-2">
+        Back to Product Prediction
+    </a>
+
+    {% if prediction %}
+        {% if prediction.error %}
+            <div class="alert alert-danger mt-3">
+                {{ prediction.error }}
+            </div>
+        {% else %}
+            <div class="card mt-3">
+                <div class="card-body">
+                    <h5>Prediction for {{ prediction.product_id }} ({{ prediction.mode }})</h5>
+                    <p><strong>Last Forecasted Date:</strong> {{ prediction.date }}</p>
+                    <p><strong>Final Forecasted Value:</strong> {{ prediction.final_prediction }}</p>
+                </div>
+            </div>
+
+            <!-- Hidden JSON Data -->
+            <script id="chart-data" type="application/json">
+                {{ prediction | tojson | safe }}
+            </script>
+
+            <!-- Chart Container -->
+            <canvas id="salesChart" class="mt-4" style="max-height:400px;"></canvas>
+
+            <script>
+                (function() {
+                    const chartData = JSON.parse(
+                        document.getElementById('chart-data').textContent
+                    );
+
+                    const labels = chartData.history.map(item => String(item.date));
+                    const data = chartData.history.map(item => Number(item.sales));
+
+                    const forecastLabels = chartData.forecasts.map(item => item.date);
+                    const forecastValues = chartData.forecasts.map(item => item.forecast);
+
+                    const combinedLabels = [...labels, ...forecastLabels];
+                    const combinedData = [...data, ...forecastValues];
+
+                    const ctx = document.getElementById('salesChart').getContext('2d');
+                    new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: combinedLabels,
+                            datasets: [{
+                                label: 'Sales',
+                                data: combinedData,
+                                borderColor: 'blue',
+                                backgroundColor: 'rgba(0, 0, 255, 0.1)',
+                                fill: true,
+                                tension: 0.1,
+                                pointRadius: ctx => ctx.dataIndex >= data.length ? 6 : 3,
+                                pointBackgroundColor: ctx => ctx.dataIndex >= data.length ? 'red' : 'blue'
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            plugins: {
+                                title: {
+                                    display: true,
+                                    text: 'Sales History and Multi-Step Forecast'
+                                }
+                            }
+                        }
+                    });
+                })();
+            </script>
+        {% endif %}
+    {% endif %}
+</body>
+</html>
